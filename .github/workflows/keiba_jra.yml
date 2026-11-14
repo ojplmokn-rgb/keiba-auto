@@ -2,10 +2,18 @@ name: keiba-jra
 
 on:
   schedule:
-    - cron: '0 22 * * *'       # 日本時間 7:00 前の日までの答え合わせ → 今日の出馬表と材料
-    - cron: '*/15 0-7 * * *'   # 日本時間 9:00〜16:45 の15分ごと：発走の2〜25分前のレースを予想して記録
-    - cron: '30 8 * * *'       # 日本時間 17:30 今日の答え合わせ
+    - cron: '0 22 * * *'     # 日本時間 7:00 前の日までの答え合わせ → 今日の出馬表と材料
+    - cron: '40 23 * * *'    # 日本時間 8:40〜14:30 動き続けて、各レースの発走10分前に予想して記録
+    - cron: '30 4 * * *'     # 日本時間 13:30〜16:45 （前の回が終わるのを待ってから続きを担当）
+    - cron: '30 8 * * *'     # 日本時間 17:30 答え合わせ
+    - cron: '0 13 * * *'     # 日本時間 22:00 答え合わせ（結果のページの更新が遅い日のため）
   workflow_dispatch:
+    inputs:
+      mode:
+        description: '何をするか'
+        type: choice
+        options: [prepare, live, settle]
+        default: prepare
 
 permissions:
   contents: write
@@ -17,43 +25,43 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - name: どの仕事か決める
         id: m
         run: |
           S="${{ github.event.schedule }}"
-          if [ -z "$S" ] || [ "$S" = "0 22 * * *" ]; then M=prepare; elif [ "$S" = "30 8 * * *" ]; then M=settle; else M=predict; fi
-          D=$(TZ=Asia/Tokyo date +%Y%m%d)
-          if [ "$M" = predict ] && [ ! -f "data/keiba_history/s5_tool/day_$D.pkl" ]; then echo "go=0" >> $GITHUB_OUTPUT; echo "今日は開催がないか、朝の準備がまだです"; else echo "go=1" >> $GITHUB_OUTPUT; fi
+          case "$S" in
+            "0 22 * * *") M="prepare" ;;
+            "40 23 * * *") M="live 14:30" ;;
+            "30 4 * * *") M="live 16:45" ;;
+            "30 8 * * *"|"0 13 * * *") M="settle" ;;
+            *) M="${{ github.event.inputs.mode }}"; [ "$M" = "live" ] && M="live 16:45" ;;
+          esac
           echo "mode=$M" >> $GITHUB_OUTPUT
+          echo "今回の仕事：$M"
       - uses: actions/setup-python@v5
-        if: steps.m.outputs.go == '1'
         with:
           python-version: '3.11'
-      - if: steps.m.outputs.go == '1'
-        run: pip install pandas numpy scipy lightgbm requests beautifulsoup4 gdown
-      - name: ドライブからコードとデータを取ってくる
-        if: steps.m.outputs.go == '1'
-        run: |
-          python -c "import gdown; gdown.download_folder(id='1yb9be0kpev2fAHBjeKY4QMEDu2NAwpXW', output='drive_jra', quiet=True)"
-          cp drive_jra/keiba_auto.py .
+      - run: pip install pandas numpy scipy lightgbm requests beautifulsoup4 gdown
+      - name: ドライブからデータを取ってくる
+        run: python -c "import gdown; gdown.download_folder(id='1yb9be0kpev2fAHBjeKY4QMEDu2NAwpXW', output='drive_jra', quiet=True)"
       - name: 実行
-        if: steps.m.outputs.go == '1'
         env:
           KEIBA_BASE: data
           DRIVE_DIR: drive_jra
           REPORT_MD: report_jra.md
           TZ: Asia/Tokyo
+          PYTHONUNBUFFERED: '1'
         run: python keiba_auto.py ${{ steps.m.outputs.mode }}
       - name: 記録を保存
-        if: steps.m.outputs.go == '1'
+        if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           mkdir -p data/new data/state
           git add -A data/new data/state data/keiba_history/s5_tool report_jra.md || true
           git diff --cached --quiet && exit 0
-          git commit -m "競馬（中央） ${{ steps.m.outputs.mode }} $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+          git commit -m "競馬（中央） $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
           for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
