@@ -1,5 +1,5 @@
 # =====================================================================
-#  競馬予想システム：①〜④まとめて 自動予想・記録・答え合わせ（GitHub Actions用）  版：au3a（2026-11-14）
+#  競馬予想システム：①〜④まとめて 自動予想・記録・答え合わせ（GitHub Actions用）  版：au4a（2026-11-15）
 #   python keiba_auto.py prepare … 前の日までの答え合わせ → 今日の出馬表と材料を作る（朝）
 #   python keiba_auto.py live HH:MM … 止める時刻まで動き続け、各レースの発走10分前に最新の単勝オッズで予想して記録
 #   python keiba_auto.py predict … 発走の2〜25分前のレースを予想して記録（1回だけ）
@@ -42,7 +42,7 @@ HEADERS = {'User-Agent': 'Mozilla/5.0 (personal research, low rate)'}
 def eligible_mask(d):
     return (d['surface_code'] != 3) & (d['n_runners'] >= 10) & (d['class_code'] != 1)
 EXCLUDE_NOTE = '新馬戦・障害・10頭未満を除外'
-print(f'①〜④まとめて 自動予想（中央競馬）　版：au3a　モード：{MODE}')
+print(f'①〜④まとめて 自動予想（中央競馬）　版：au4a　モード：{MODE}')
 NEW_DIR = f'{BASE}/new'; STATE_DIR = f'{BASE}/state'
 _DRV = os.environ.get('DRIVE_DIR')          # GitHub Actions：Googleドライブから取ってきたデータを、決まった場所に置く
 if _DRV and os.path.isdir(_DRV):
@@ -1236,6 +1236,54 @@ def predict_one(rid):
     except Exception as e:
         print(f'{rid}：計算できませんでした（{type(e).__name__}）'); mark_done(TODAY, rid, 'エラー')
 
+OWNER = 'ojplmokn-rgb'
+def gh(*a):
+    import subprocess
+    return subprocess.run(['gh', *a], capture_output=True, text=True)
+def notify(day, text):
+    """GitHubのIssueにコメントして、スマホに通知する（地方の keiba-wide と同じ）"""
+    if not os.environ.get('GITHUB_ACTIONS'):
+        print('（通知）' + text[:200]); return
+    fp = f'{STATE_DIR}/issue_{str(day).replace("-", "")}.txt'
+    num = open(fp).read().strip() if os.path.exists(fp) else None
+    if not num:
+        r = gh('issue', 'create', '--title', f'{day} 中央競馬 ①〜④の予想', '--assignee', OWNER,
+               '--body', f'@{OWNER} {day} の中央競馬の予想です。各レースの発走{PRED_MIN}分前ごろのオッズで計算し、買い目が出たレースをコメントで届けます。答え合わせの結果もここに届きます。\n\n※お金はかけない記録です。')
+        m = re.search(r'/issues/(\d+)', r.stdout)
+        if not m:
+            print('通知を作れませんでした：', r.stderr[:200]); return
+        num = m.group(1); open(fp, 'w').write(num)
+    r = gh('issue', 'comment', num, '--body', f'@{OWNER} ' + text)
+    if r.returncode != 0:
+        print('通知できませんでした：', r.stderr[:200])
+
+def notify_race(rid):
+    log = pd.read_csv(LOG_CSV, dtype={'race_id': str})
+    z = log[(log['race_id'] == rid) & (log['date'] == str(TODAY))]
+    if z.empty:
+        return
+    post = DAYR.set_index('race_id').loc[rid, 'post']
+    L = [f'**{z["レース"].iloc[0]}**（{post}発走）　合計 {z["金額"].sum():,.0f}円']
+    for sec, g in z.groupby('区分', sort=True):
+        sep = '→' if g['券種'].iloc[0] == '3連単' else '-'
+        L.append(f'- {sec}（{len(g)}{"組" if g["券種"].iloc[0] == "ワイド" else "点"}・{g["金額"].sum():,.0f}円）：' + '　'.join(c.replace('-', sep) for c in g['組']))
+    notify(TODAY, '\n'.join(L))
+
+def notify_result(log, day):
+    z = log[(log['date'] == day) & log['払戻'].notna()].copy()
+    if z.empty:
+        return
+    z['区分'] = z['区分'].astype(str).str.replace(r'(①3連単).*', r'\1', regex=True)
+    L = [f'**{day} の答え合わせ**', '', '| 買い方 | レース | 投資 | 払戻 | 回収率 |', '|---|---|---|---|---|']
+    for nm, g in sorted(z.groupby('区分'), key=lambda t: t[0]) + [('合計', z)]:
+        L.append(f'| {nm} | {g["race_id"].nunique()} | {g["金額"].sum():,.0f}円 | {g["払戻"].sum():,.0f}円 | {g["払戻"].sum() / g["金額"].sum() * 100:.0f}% |')
+    hits = z[z['払戻'] > 0]
+    L += ['', '当たり：' + ('、'.join(f'{r.レース} {r.区分} {r.組}（{r.払戻:,.0f}円）' for r in hits.itertuples()) if len(hits) else 'なし')]
+    pend = log[(log['date'] == day) & log['払戻'].isna()]['race_id'].nunique()
+    if pend:
+        L.append(f'（まだ結果が読めていないレース：{pend}）')
+    notify(day, '\n'.join(L))
+
 def save_to_github(msg):
     """GitHub Actionsで動いているときだけ、記録をその場で保存する"""
     if not os.environ.get('GITHUB_ACTIONS'):
@@ -1276,6 +1324,10 @@ def run_live(stop_hm):
                 mark_done(TODAY, rid, '間に合わず'); print(f'{rid}：発走に間に合わなかった'); changed = True
             elif post - dt.timedelta(minutes=PRED_MIN) <= now:
                 print(f'\n{now:%H:%M} {rid}（{post:%H:%M}発走）を予想します'); predict_one(rid); changed = True
+                try:
+                    notify_race(rid)
+                except Exception as e:
+                    print('通知でエラー：', type(e).__name__)
         if changed:
             write_report(); save_to_github(f'競馬（中央） 予想 {now:%Y-%m-%d %H:%M}'); continue
         nxt = min(p for p, _ in todo) - dt.timedelta(minutes=PRED_MIN)
@@ -1308,6 +1360,38 @@ def run_predict():
         except Exception as e:
             print(f'{r.race_id}：計算できませんでした（{type(e).__name__}）'); mark_done(TODAY, r.race_id, 'エラー')
 
+GROUP = {'単勝': 1, '複勝': 1, '枠連': 2, '馬連': 2, 'ワイド': 2, '馬単': 2, '3連複': 3, '3連単': 3}
+def race_payouts(rid):
+    """race.netkeiba の結果ページから払戻を読む（db.netkeiba が読めないとき用）"""
+    try:
+        page = get(f'https://race.netkeiba.com/race/result.html?race_id={rid}')
+    except BlockedError as e:
+        print(f'{rid}：{e}'); return None
+    if not page:
+        return None
+    soup = BeautifulSoup(page, 'html.parser'); out = []
+    for tr in soup.find_all('tr'):
+        th = tr.find('th')
+        if not th:
+            continue
+        kind = nfkc(th.get_text()).strip().replace('三連複', '3連複').replace('三連単', '3連単')
+        if kind not in GROUP:
+            continue
+        td = tr.find('td', class_=re.compile('Result'))
+        if td is None:
+            continue
+        nums = [int(x) for x in re.findall(r'\d+', td.get_text(' '))]
+        pays = [int(x.replace(',', '')) for x in re.findall(r'([\d,]+)円', tr.get_text(' '))]
+        k = GROUP[kind]
+        for i, pv in enumerate(pays):
+            c = nums[k * i:k * i + k]
+            if len(c) == k:
+                c = c if kind in ('3連単', '馬単') else sorted(c)
+                out.append({'race_id': rid, 'kind': kind, 'combo': '-'.join(map(str, c)), 'payout': float(pv)})
+    return out or None
+
+DB_NG = [False]
+
 def run_settle():
     """記録したレースと、その日の全レースの結果を集めて、払戻を書き込む"""
     import glob
@@ -1318,28 +1402,34 @@ def run_settle():
         day = dt.datetime.strptime(os.path.basename(pk)[4:12], '%Y%m%d').date()
         if (TODAY - day).days > 7:
             continue
-        rp = f'{NEW_DIR}/results_{day:%Y%m%d}.csv'
+        rp = f'{NEW_DIR}/payouts_{day:%Y%m%d}.csv'
         have = set(pd.read_csv(rp, dtype={'race_id': str})['race_id']) if os.path.exists(rp) else set()
         _, dr = pd.read_pickle(pk)
         H, R_, P_ = [], [], []
         for rid in dr['race_id']:
             if rid in have:
                 continue
-            try:
-                out = parse_race(rid)
-            except BlockedError:
-                raise
-            except Exception:
-                out = None
-            if not out:
-                continue
-            h, rc, pays = out; H.append(h); R_.append(rc); P_ += pays
-        if H:
-            for nm, df in [('results', pd.concat(H, ignore_index=True)), ('races', pd.DataFrame(R_)), ('payouts', pd.DataFrame(P_))]:
+            out = None
+            if not DB_NG[0]:
+                try:
+                    out = parse_race(rid)
+                except BlockedError as e:
+                    print(f'db.netkeiba が読めません（{e}）→ 結果ページの払戻だけで答え合わせします'); DB_NG[0] = True
+                except Exception:
+                    out = None
+            if out:
+                h, rc, pays = out; H.append(h); R_.append(rc); P_ += pays
+            else:
+                pp = race_payouts(rid)
+                if pp:
+                    P_ += pp
+        if P_:
+            parts_ = [('payouts', pd.DataFrame(P_))] + ([('results', pd.concat(H, ignore_index=True)), ('races', pd.DataFrame(R_))] if H else [])
+            for nm, df in parts_:
                 p = f'{NEW_DIR}/{nm}_{day:%Y%m%d}.csv'
                 old = pd.read_csv(p, dtype={'race_id': str, 'combo': str}) if os.path.exists(p) else None
                 pd.concat([old, df], ignore_index=True).to_csv(p, index=False, encoding='utf-8-sig')
-            print(f'{day}：{len(R_)}レースの結果を集めました')
+            print(f'{day}：{len(set(x["race_id"] for x in P_))}レースの払戻を集めました')
     if not len(log):
         return
     pp = f'{NEW_DIR}/payouts_*.csv'
@@ -1350,6 +1440,8 @@ def run_settle():
                             zip(log.loc[todo, 'race_id'], log.loc[todo, '券種'], log.loc[todo, '組'], log.loc[todo, '金額'])]
     log.to_csv(LOG_CSV, index=False, encoding='utf-8-sig')
     print(f'答え合わせ：{int(todo.sum())}点を確定しました')
+    for d_ in sorted(log.loc[todo, 'date'].unique()):
+        notify_result(log, d_)
 
 def md_table(df):
     cols = list(df.columns)

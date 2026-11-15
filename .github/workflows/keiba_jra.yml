@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: keiba-jra
@@ -54,6 +55,7 @@ jobs:
           REPORT_MD: report_jra.md
           TZ: Asia/Tokyo
           PYTHONUNBUFFERED: '1'
+          GH_TOKEN: ${{ github.token }}
         run: python keiba_auto.py ${{ steps.m.outputs.mode }}
       - name: 記録を保存
         if: always()
