@@ -1,0 +1,64 @@
+name: keiba-win5
+
+on:
+  schedule:
+    - cron: '30 3 * * 0,1,6'   # 日本時間 12:30（土・日・月）WIN5の締切12分前まで待って予想・記録
+    - cron: '0 9 * * 0,1,6'    # 日本時間 18:00 答え合わせ
+    - cron: '0 13 * * 0,1,6'   # 日本時間 22:00 答え合わせ（結果のページの更新が遅い日のため）
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '何をするか'
+        type: choice
+        options: [predict, settle]
+        default: predict
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: keiba-win5-${{ github.event.schedule || github.event.inputs.mode }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: どの仕事か決める
+        id: m
+        run: |
+          S="${{ github.event.schedule }}"
+          case "$S" in
+            "30 3 * * 0,1,6") M="predict" ;;
+            "0 9 * * 0,1,6"|"0 13 * * 0,1,6") M="settle" ;;
+            *) M="${{ github.event.inputs.mode }}" ;;
+          esac
+          echo "mode=$M" >> $GITHUB_OUTPUT
+          echo "今回の仕事：$M"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pandas numpy requests beautifulsoup4 lxml gdown
+      - name: ドライブからモデルを取ってくる
+        if: steps.m.outputs.mode == 'predict'
+        run: python -c "import gdown; gdown.download_folder(id='1yb9be0kpev2fAHBjeKY4QMEDu2NAwpXW', output='drive_jra', quiet=True)"
+      - name: 実行
+        env:
+          DRIVE_DIR: drive_jra
+          REPORT_WIN5: report_win5.md
+          TZ: Asia/Tokyo
+          PYTHONUNBUFFERED: '1'
+          GH_TOKEN: ${{ github.token }}
+        run: python win5_auto.py ${{ steps.m.outputs.mode }}
+      - name: 記録を保存
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A data/win5 report_win5.md || true
+          git diff --cached --quiet && exit 0
+          git commit -m "WIN5 $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
