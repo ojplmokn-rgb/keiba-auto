@@ -1,5 +1,5 @@
 # =====================================================================
-#  競馬予想システム：①〜④まとめて 自動予想・記録・答え合わせ（GitHub Actions用）  版：au4a（2026-11-15）
+#  競馬予想システム：①〜④まとめて 自動予想・記録・答え合わせ（GitHub Actions用）  版：au5a（2026-11-22）
 #   python keiba_auto.py prepare … 前の日までの答え合わせ → 今日の出馬表と材料を作る（朝）
 #   python keiba_auto.py live HH:MM … 止める時刻まで動き続け、各レースの発走10分前に最新の単勝オッズで予想して記録
 #   python keiba_auto.py predict … 発走の2〜25分前のレースを予想して記録（1回だけ）
@@ -42,7 +42,7 @@ HEADERS = {'User-Agent': 'Mozilla/5.0 (personal research, low rate)'}
 def eligible_mask(d):
     return (d['surface_code'] != 3) & (d['n_runners'] >= 10) & (d['class_code'] != 1)
 EXCLUDE_NOTE = '新馬戦・障害・10頭未満を除外'
-print(f'①〜④まとめて 自動予想（中央競馬）　版：au4a　モード：{MODE}')
+print(f'①〜④まとめて 自動予想（中央競馬）　版：au5a　モード：{MODE}')
 NEW_DIR = f'{BASE}/new'; STATE_DIR = f'{BASE}/state'
 _DRV = os.environ.get('DRIVE_DIR')          # GitHub Actions：Googleドライブから取ってきたデータを、決まった場所に置く
 if _DRV and os.path.isdir(_DRV):
@@ -1303,19 +1303,32 @@ def save_to_github(msg):
         time.sleep(5)
     print('記録の保存に失敗しました（あとでまとめて保存します）')
 
-def run_live(stop_hm):
-    """止める時刻まで動き続け、各レースの発走10分前に予想して記録する（競艇・地方の keiba-wide と同じ形）"""
+def run_live(window):
+    """「開始-終了」の時間帯に予想するレースを、各レースの発走10分前に予想して記録する（keiba-wide と同じ形）
+    例：'-13:50' は13:50まで、'13:50-16:45' は予想時刻が13:50以降のレースを16:45まで担当"""
+    import subprocess
+    pk = f'{S5_DIR}/day_{TODAY:%Y%m%d}.pkl'
+    if os.environ.get('GITHUB_ACTIONS'):
+        for _ in range(18):                                   # 朝の準備がまだなら、最大90分待つ（二重に作らないため）
+            if os.path.exists(pk) or not race_list(TODAY):
+                break
+            print('朝の準備を待っています…'); time.sleep(300)
+            subprocess.run(['git', 'pull', '--rebase', '-q'], capture_output=True)
     if not prepare_day(TODAY):
         return
-    hh, mm = map(int, stop_hm.split(':'))
-    stop = dt.datetime.combine(TODAY, dt.time(hh, mm), JST)
-    print(f'{stop:%H:%M} まで動きます（各レースの発走{PRED_MIN}分前に予想）')
+    a, _, b = window.rpartition('-') if '-' in window else ('', '', window)
+    def hm(x):
+        h_, m_ = map(int, x.split(':')); return dt.datetime.combine(TODAY, dt.time(h_, m_), JST)
+    start = hm(a) if a else None
+    stop = hm(b)
+    print(f'{"予想時刻が" + a + "以降のレースを" if a else ""}{stop:%H:%M} まで担当します（各レースの発走{PRED_MIN}分前に予想）')
     while True:
         now = dt.datetime.now(JST)
         if now >= stop:
             print('止める時刻になりました'); break
         done = set(pd.read_csv(done_path(TODAY), dtype={'race_id': str})['race_id']) if os.path.exists(done_path(TODAY)) else set()
-        todo = sorted((post_time(r), r.race_id) for r in DAYR.itertuples() if r.race_id not in done and r.post)
+        todo = sorted((post_time(r), r.race_id) for r in DAYR.itertuples() if r.race_id not in done and r.post
+                      and (start is None or post_time(r) - dt.timedelta(minutes=PRED_MIN) >= start))
         if not todo:
             print('今日のレースは全部終わりました'); break
         changed = False
@@ -1492,7 +1505,7 @@ try:
     if MODE == 'prepare':
         run_settle(); prepare_day(TODAY)
     elif MODE == 'live':
-        run_live(sys.argv[2] if len(sys.argv) > 2 else '16:45')
+        run_live(sys.argv[2] if len(sys.argv) > 2 else '-16:45')
     elif MODE == 'predict':
         run_predict()
     elif MODE == 'settle':

@@ -3,8 +3,8 @@ name: keiba-jra
 on:
   schedule:
     - cron: '0 22 * * *'     # 日本時間 7:00 前の日までの答え合わせ → 今日の出馬表と材料
-    - cron: '40 23 * * *'    # 日本時間 8:40〜14:30 動き続けて、各レースの発走10分前に予想して記録
-    - cron: '30 4 * * *'     # 日本時間 13:30〜16:45 （前の回が終わるのを待ってから続きを担当）
+    - cron: '0 23 * * *'     # 日本時間 8:00〜13:50 動き続けて、各レースの発走10分前に予想して記録
+    - cron: '0 3 * * *'      # 日本時間 12:00から待機し、13:50〜16:45 の分を担当
     - cron: '30 8 * * *'     # 日本時間 17:30 答え合わせ
     - cron: '0 13 * * *'     # 日本時間 22:00 答え合わせ（結果のページの更新が遅い日のため）
   workflow_dispatch:
@@ -20,7 +20,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: keiba-jra
+  group: keiba-jra-${{ github.event.schedule || github.event.inputs.mode }}
   cancel-in-progress: false
 
 jobs:
@@ -35,10 +35,10 @@ jobs:
           S="${{ github.event.schedule }}"
           case "$S" in
             "0 22 * * *") M="prepare" ;;
-            "40 23 * * *") M="live 14:30" ;;
-            "30 4 * * *") M="live 16:45" ;;
+            "0 23 * * *") M="live -13:50" ;;
+            "0 3 * * *") M="live 13:50-16:45" ;;
             "30 8 * * *"|"0 13 * * *") M="settle" ;;
-            *) M="${{ github.event.inputs.mode }}"; [ "$M" = "live" ] && M="live 16:45" ;;
+            *) M="${{ github.event.inputs.mode }}"; [ "$M" = "live" ] && M="live -16:45" ;;
           esac
           echo "mode=$M" >> $GITHUB_OUTPUT
           echo "今回の仕事：$M"
