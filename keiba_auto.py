@@ -871,7 +871,11 @@ def all_picks(g, info, rid):
     top = np.argsort(-tm2)[:20]; ev = tm2[top] * est_trio(tk2[top])
     if (ev >= 0.9).any():
         j = top[int(np.argmax(np.where(ev >= 0.9, ev, -np.inf)))]
-        out.append(('3連複', lab3(uk2[j]), 100, '③3連複', f'期待値{ev.max():.2f}・来る確率{tm2[j] * 100:.2f}%'))
+        c3 = lab3(uk2[j]); same = [i for i, o_ in enumerate(out) if o_[0] == '3連複' and o_[1] == c3]
+        if same:                                              # ②と同じ組は一口にまとめる（②の印に③も重なったと書く）
+            i = same[0]; out[i] = out[i][:4] + (out[i][4] + '（③とも重なり）',)
+        else:
+            out.append(('3連複', c3, 100, '③3連複', f'期待値{ev.max():.2f}・来る確率{tm2[j] * 100:.2f}%'))
     # ④ワイド（1組だけ）：補正なし
     iu, wk = wide_tab(Ph, hk, n); _, wm = wide_tab(Ph, hm, n)
     top = np.argsort(-wm)[:8]; ev = wm[top] * BIG['kwh'] / np.clip(wk[top], 1e-12, None)
